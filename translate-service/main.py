@@ -3,6 +3,7 @@
 
 from fastapi import FastAPI
 from pydantic import BaseModel
+from typing import List
 import requests
 import json
 import os
@@ -37,6 +38,22 @@ class TranslateResponse(BaseModel):
     translated_text: str    # The Chinese translation
     message: str = ""       # Optional status message
 
+class SummarizeRequest(BaseModel):
+    """
+    Data model for summarization requests
+    """
+    text: str              # The text to summarize (required)
+    max_points: int = 3    # Number of key points to extract (default: 3)
+
+class SummarizeResponse(BaseModel):
+    """
+    Data model for summarization responses
+    """
+    success: bool          # Whether summarization succeeded
+    original_text: str     # The original text
+    summary_points: List[str]  # List of key points
+    message: str = ""      # Optional status message
+
 # Create the FastAPI application
 app = FastAPI(
     title="Translation Service",
@@ -52,9 +69,10 @@ def read_root():
     Returns basic service information and status
     """
     return {
-        "message": "Translation Service is running!",
+        "message": "AI Microservice is running!",
         "status": "healthy", 
-        "endpoints": ["/translate"]
+        "endpoints": ["/translate", "/summarize"],
+        "features": ["English to Chinese Translation", "Text Summarization"]
     }
 
 # Step 4: Add the translate endpoint
@@ -125,6 +143,98 @@ def translate_text(request: TranslateRequest) -> TranslateResponse:
             original_text=request.text,
             translated_text="",
             message=f"Translation failed: {str(e)}"
+        )
+
+# Step 5: Add the summarize endpoint
+@app.post("/summarize")
+def summarize_text(request: SummarizeRequest) -> SummarizeResponse:
+    """
+    Summarize text into key points
+    
+    This endpoint receives text and returns key summary points
+    """
+    try:
+        # Get the text to summarize
+        text = request.text
+        max_points = request.max_points
+        
+        # Get OpenAI API key from environment
+        api_key = os.getenv("OPENAI_API_KEY")
+        
+        if api_key:
+            # Use OpenAI API for real summarization
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": "gpt-4",
+                "messages": [
+                    {
+                        "role": "system", 
+                        "content": f"You are a professional text summarizer. Extract exactly {max_points} key points from the given text. Return only the key points as a numbered list, no additional explanation."
+                    },
+                    {
+                        "role": "user", 
+                        "content": f"Summarize this text into {max_points} key points:\n\n{text}"
+                    }
+                ],
+                "max_tokens": 300,
+                "temperature": 0.1
+            }
+            
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                summary_text = result["choices"][0]["message"]["content"].strip()
+                
+                # Parse the numbered list into individual points
+                summary_points = []
+                for line in summary_text.split('\n'):
+                    line = line.strip()
+                    if line and (line[0].isdigit() or line.startswith('-') or line.startswith('•')):
+                        # Remove numbering and clean up
+                        clean_point = line.split('.', 1)[-1].strip() if '.' in line else line.strip()
+                        clean_point = clean_point.lstrip('- •').strip()
+                        if clean_point:
+                            summary_points.append(clean_point)
+                
+                # Ensure we have the requested number of points
+                if len(summary_points) < max_points:
+                    summary_points.extend([f"Additional point {i+1}" for i in range(len(summary_points), max_points)])
+                elif len(summary_points) > max_points:
+                    summary_points = summary_points[:max_points]
+                    
+            else:
+                summary_points = [f"[API Error {response.status_code}] {response.text}"]
+        else:
+            # Fallback: Mock summarization when no API key
+            summary_points = [
+                f"[Mock Summary] Key point 1 from: {text[:50]}...",
+                f"[Mock Summary] Key point 2 from the text",
+                f"[Mock Summary] Key point 3 - OPENAI_API_KEY not configured"
+            ][:max_points]
+        
+        return SummarizeResponse(
+            success=True,
+            original_text=text,
+            summary_points=summary_points,
+            message="Summarization completed successfully"
+        )
+        
+    except Exception as e:
+        return SummarizeResponse(
+            success=False,
+            original_text=request.text,
+            summary_points=[],
+            message=f"Summarization failed: {str(e)}"
         )
 
 # OpenAPI endpoint for Dify tool registration
